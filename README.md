@@ -89,3 +89,46 @@ python -m pytest
 
 The per-90 threshold defaults to 450 minutes. It excludes low-minute rows from
 per-90 values but does not make the remaining statistics automatically reliable.
+
+## Run the app
+
+Participant 2's Streamlit app turns the processed tables into a transfer-window
+decision tool for one club (default: Manchester United, season 2025/26).
+
+```powershell
+python -m pip install -r requirements.txt
+python -m src.prepare_top5      # once, creates data/processed/*.csv
+streamlit run app.py
+```
+
+Inputs: `data/processed/scouting_dataset.csv` joined with
+`data/processed/player_financials.csv` on `record_id` (`ea_value_eur` ->
+`market_value`, `ea_wage_eur` -> `salary`, `ea_contract_end_year` ->
+`contract_end`), plus `role_requirements.csv` with the metric weights per position.
+An empty value stays unknown; it is never treated as zero.
+
+Code map:
+
+- `src/app_data.py` loads and joins the tables and reads the role model.
+- `src/ranking.py` scores players: every metric becomes a percentile inside the
+  position pool (DF / MF / FW, minimum minutes configurable), the score is the
+  weighted average of percentiles on a 0-100 scale, and `contrib_<metric>` columns
+  show how many points each metric added. A goals-plus-assists percentile is kept
+  as the naive baseline; a "hidden gem" is in the top quarter of the role model but
+  below the baseline median. Players transferred mid-season keep only their
+  longest stint when listed as candidates.
+- `src/scenarios.py` audits the club's players for the position (heuristic flags
+  for veterans below the median and prospects with little playing time), builds a
+  greedy budget-constrained reinforcement plan, and recomputes it at -20% / +20%
+  budget. Candidates without a known value are listed for valuation, not bought.
+- `app.py` is the UI: squad audit, ranked candidates with score breakdown, radar
+  comparison, and the reinforcement scenario. Role weights can be changed live.
+
+Goalkeepers are not supported because the scouting table has no goalkeeper
+metrics. Alternatives not implemented on purpose: z-scores instead of percentiles
+(sensitive to outliers), a learned model for weights (no outcome labels in the
+data), and knapsack optimisation instead of the greedy plan (harder to explain
+for a one-to-three-signing window).
+
+Tests for the ranking and the scenarios live in `tests/test_ranking.py` and
+`tests/test_scenarios.py`.

@@ -1,0 +1,21 @@
+position,metric,weight,label
+FW,npxg_per90,0.30,npxG за 90 (без пенальти)
+FW,goals_per90,0.15,Голы за 90
+FW,shots_per90,0.10,Удары за 90
+FW,xa_per90,0.15,xA за 90
+FW,key_passes_per90,0.10,Ключевые передачи за 90
+FW,dribbles_completed_per90,0.10,Успешные обводки за 90
+FW,aerial_duels_won_pct,0.10,Верховые единоборства %
+MF,xa_per90,0.20,xA за 90
+MF,key_passes_per90,0.15,Ключевые передачи за 90
+MF,pass_accuracy_pct,0.15,Точность передач %
+MF,npxg_per90,0.10,npxG за 90 (без пенальти)
+MF,dribbles_completed_per90,0.10,Успешные обводки за 90
+MF,tackles_per90,0.15,Отборы за 90
+MF,interceptions_per90,0.15,Перехваты за 90
+DF,tackles_per90,0.20,Отборы за 90
+DF,interceptions_per90,0.20,Перехваты за 90
+DF,clearances_per90,0.15,Выносы за 90
+DF,aerial_duels_won_pct,0.20,Верховые единоборства %
+DF,ground_duels_won_pct,0.15,Нижние единоборства %
+DF,pass_accuracy_pct,0.10,Точность передач %
