@@ -1,0 +1,4 @@
+player_id,player_name,team,league,season,position,age,minutes,goals,assists,progressive_passes,market_value,salary
+sample-1,Example Forward A,Example FC,Example League,2024,FW,24,1800,12,4,35,8000000,
+sample-2,Example Forward B,Example FC,Example League,2024,FW,20,300,2,1,7,2500000,
+sample-3,Example Midfielder,Example FC,Example League,2024,MF,27,2100,3,7,145,6000000,
