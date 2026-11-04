@@ -121,8 +121,13 @@ Code map:
   for veterans below the median and prospects with little playing time), builds a
   greedy budget-constrained reinforcement plan, and recomputes it at -20% / +20%
   budget. Candidates without a known value are listed for valuation, not bought.
+- `src/explain.py` produces the intermediate tables behind every number: weight
+  shares, percentile boundaries of the pool, the candidate filter funnel, the
+  per-metric gap between compared players and the club's rank per position.
 - `app.py` is the UI: squad audit, ranked candidates with score breakdown, radar
-  comparison, and the reinforcement scenario. Role weights can be changed live.
+  comparison, the reinforcement scenario, and a "Calculations" tab that walks
+  through how each of the four results is derived from the sidebar weights
+  (including the greedy plan's decision log). Role weights can be changed live.
 
 Goalkeepers are not supported because the scouting table has no goalkeeper
 metrics. Alternatives not implemented on purpose: z-scores instead of percentiles
@@ -130,5 +135,5 @@ metrics. Alternatives not implemented on purpose: z-scores instead of percentile
 data), and knapsack optimisation instead of the greedy plan (harder to explain
 for a one-to-three-signing window).
 
-Tests for the ranking and the scenarios live in `tests/test_ranking.py` and
-`tests/test_scenarios.py`.
+Tests for the ranking, the scenarios and the explanation tables live in
+`tests/test_ranking.py`, `tests/test_scenarios.py` and `tests/test_explain.py`.

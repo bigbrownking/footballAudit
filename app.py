@@ -12,8 +12,19 @@ from src.app_data import (
     metric_labels,
     role_weights,
 )
+from src.explain import candidate_funnel, pool_quantiles, positions_overview, score_gap, weight_table
 from src.ranking import filter_candidates, score_players
-from src.scenarios import budget_sensitivity, reinforcement_plan, squad_audit, team_core_quality
+from src.scenarios import (
+    CORE_SIZE,
+    PROSPECT_AGE,
+    PROSPECT_MINUTES,
+    VETERAN_AGE,
+    budget_sensitivity,
+    plan_steps,
+    reinforcement_plan,
+    squad_audit,
+    team_core_quality,
+)
 
 DEFAULT_TEAM = "Manchester United"
 MILLION = 1e6
@@ -21,6 +32,12 @@ FLAG_LABELS = {
     "": "",
     "veteran_below_median": "ветеран ниже медианы: продать или продлить?",
     "prospect_low_minutes": "молодой без практики: аренда?",
+}
+DECISION_LABELS = {
+    "signed": "куплен",
+    "too_expensive": "дороже остатка — пропуск",
+    "no_value": "стоимость неизвестна — на оценку",
+    "slots_full": "слоты заняты",
 }
 BASE_COLUMNS = ["player_name", "team", "league", "position", "age", "minutes"]
 COLUMN_CONFIG = {
@@ -73,6 +90,11 @@ def player_options(frame: pd.DataFrame) -> dict[str, str]:
     return {f"{row.player_name} ({row.team})": row.record_id for row in frame.itertuples()}
 
 
+def names_with_scores(frame: pd.DataFrame) -> str:
+    """'Name (72.9), Name (67.5)' for short textual explanations."""
+    return ", ".join(f"{name} ({score:.1f})" for name, score in zip(frame["player_name"], frame["score"]))
+
+
 # ---------------------------------------------------------------- inputs
 with st.sidebar:
     st.header("Параметры")
@@ -118,8 +140,8 @@ st.caption(
     f"Сезон 2025/26, пять топ-лиг. В пуле позиции {len(scored)} игроков с ≥ {min_minutes} минут; "
     f"рейтинг = взвешенные процентили внутри пула (100 = лучший). {FINANCIAL_DISCLAIMER}"
 )
-tab_audit, tab_candidates, tab_compare, tab_plan = st.tabs(
-    ["Аудит состава", "Кандидаты", "Сравнение", "Сценарий усиления"]
+tab_audit, tab_candidates, tab_compare, tab_plan, tab_calc = st.tabs(
+    ["Аудит состава", "Кандидаты", "Сравнение", "Сценарий усиления", "Вычисления"]
 )
 
 # ---------------------------------------------------------------- squad audit
@@ -233,6 +255,171 @@ with tab_plan:
     st.caption(
         "Жадный алгоритм: берём лучшего по рейтингу кандидата, который помещается в остаток бюджета, "
         "пока не кончатся бюджет или слоты. Качество ядра = средний рейтинг трёх лучших игроков позиции."
+    )
+
+# ---------------------------------------------------------------- calculations
+with tab_calc:
+    st.markdown(
+        "Слева — метрики и веса (тактическая модель), справа — результаты. "
+        "Здесь показано, как из весов и данных получаются числа на каждой вкладке."
+    )
+
+    st.subheader("1. Формула рейтинга и текущие веса")
+    st.latex(r"score = \sum_i 100 \cdot \frac{w_i}{\sum_j w_j} \cdot pct_i")
+    weight_summary = weight_table(weights)
+    st.dataframe(
+        weight_summary.assign(metric=weight_summary["metric"].map(labels)).round(3),
+        hide_index=True,
+        column_config={"metric": "Метрика", "weight": "Вес (слайдер)", "share": "Доля веса", "max_points": "Макс. баллов"},
+        width="stretch",
+    )
+    st.caption(
+        f"Пул: {len(scored)} игроков позиции {position} с ≥ {min_minutes} минут. Процентиль игрока — доля пула "
+        "с меньшим значением метрики. Что означают процентили в единицах метрик:"
+    )
+    st.dataframe(
+        pool_quantiles(scored, list(weights)).rename(index=labels).round(2),
+        column_config={"p25": "25-й процентиль", "p50": "медиана", "p75": "75-й", "p90": "90-й"},
+        width="stretch",
+    )
+
+    st.subheader("2. Аудит состава: качество ядра и место клуба")
+    if squad.empty:
+        st.info("У клуба нет игроков этой позиции в пуле.")
+    else:
+        core = squad.head(CORE_SIZE)
+        st.markdown(
+            f"Ядро = {CORE_SIZE} лучших игрока клуба по рейтингу: {names_with_scores(core)} "
+            f"→ среднее **{core['score'].mean():.1f}**. То же считается для каждого клуба пула:"
+        )
+        standings = league_table.rename("core_quality").reset_index()
+        standings.index = standings.index + 1
+        shown_rows = standings.head(5) if rank is None else pd.concat([standings.head(5), standings.loc[[rank]]])
+        st.dataframe(
+            shown_rows.drop_duplicates(),
+            column_config={"team": "Клуб", "core_quality": st.column_config.NumberColumn("Качество ядра", format="%.1f")},
+            width="stretch",
+        )
+    overview = positions_overview(players, roles, team, min_minutes, {position: weights})
+    st.dataframe(
+        overview,
+        hide_index=True,
+        column_config={
+            "position": "Позиция",
+            "core_quality": st.column_config.NumberColumn("Качество ядра", format="%.1f"),
+            "rank": "Место",
+            "teams": "Клубов в пуле",
+        },
+        width="stretch",
+    )
+    if overview["rank"].notna().any():
+        weakest = overview.loc[overview["rank"].idxmax()]
+        st.markdown(
+            f"Вывод: относительно других клубов слабее всего позиция **{weakest['position']}** "
+            f"({int(weakest['rank'])}-е место из {int(weakest['teams'])}). Для текущей позиции взяты веса "
+            "со слайдеров, для остальных — значения по умолчанию из `role_requirements.csv`."
+        )
+    st.markdown(
+        f"Сигналы в аудите: медиана рейтинга пула = {scored['score'].median():.1f}; «ветеран ниже медианы» = "
+        f"возраст ≥ {VETERAN_AGE} и рейтинг ниже медианы; «молодой без практики» = возраст ≤ {PROSPECT_AGE} "
+        f"и меньше {PROSPECT_MINUTES} минут."
+    )
+
+    st.subheader("3. Кандидаты: воронка фильтров и разложение рейтинга")
+    funnel = candidate_funnel(scored, team, age_range, leagues, max_value * MILLION, include_unknown)
+    funnel_labels = {
+        "pool": f"Пул позиции (≥ {min_minutes} минут)",
+        "one_stint": "Один отрезок сезона на игрока (переходы зимой)",
+        "exclude_team": f"Без игроков {team}",
+        "age": f"Возраст {age_range[0]}–{age_range[1]}",
+        "leagues": f"Лиги: {len(leagues)} из {len(all_leagues)}",
+        "value": f"Стоимость ≤ {max_value} €M, неизвестная {'включена' if include_unknown else 'исключена'}",
+    }
+    st.dataframe(
+        funnel.assign(step=funnel["step"].map(funnel_labels)),
+        hide_index=True,
+        column_config={"step": "Фильтр (накопительно)", "players": "Осталось игроков"},
+        width="stretch",
+    )
+    if not candidates.empty:
+        top = candidates.head(10)
+        stack = go.Figure(
+            [go.Bar(name=labels[metric], x=top["player_name"], y=top[f"contrib_{metric}"]) for metric in weights]
+        )
+        stack.update_layout(
+            barmode="stack", height=400, yaxis_title="Баллы",
+            legend={"orientation": "h", "y": -0.35}, margin={"l": 0, "r": 0, "t": 10, "b": 0},
+        )
+        st.plotly_chart(stack, width="stretch")
+        leader = top.iloc[0]
+        contributions = pd.Series({labels[m]: leader[f"contrib_{m}"] for m in weights}).sort_values(ascending=False)
+        strongest = ", ".join(f"{metric} ({points:.1f})" for metric, points in contributions.head(2).items())
+        st.markdown(
+            f"Лидер списка — **{leader['player_name']}** ({leader['score']:.1f} балла): больше всего дают "
+            f"{strongest}. Столбцы выше — те же слагаемые для первых {len(top)} кандидатов."
+        )
+        st.markdown(
+            f"«Скрытый талант» = рейтинг не ниже ≈{scored['score'].quantile(0.75):.1f} (граница верхней четверти "
+            f"пула) и база голы+ассисты < 50. Среди первых {len(top)} кандидатов таких {int(top['hidden_gem'].sum())}."
+        )
+
+    st.subheader("4. Сравнение: откуда берётся разница в рейтинге")
+    if len(selected) < 2:
+        st.info("Выберите игроков на вкладке «Сравнение».")
+    else:
+        gap = score_gap(compared, weights, selected).rename(index=labels).rename_axis("Метрика")
+        gap.columns = [
+            column.replace("max_points", "Макс. баллов").replace("points:", "Баллы: ").replace("gap:", "Δ к первому: ")
+            for column in gap.columns
+        ]
+        st.dataframe(gap.round(1), width="stretch")
+        st.caption("Баллы по метрике = макс. баллов × процентиль игрока; Δ — разница с первым выбранным игроком.")
+        for other in selected[1:]:
+            delta = gap[f"Δ к первому: {other}"]
+            st.markdown(
+                f"**{other}** против **{selected[0]}**: разница рейтинга {delta.sum():+.1f}; больше всего "
+                f"добавляет {delta.idxmax()} ({delta.max():+.1f}), больше всего отнимает {delta.idxmin()} "
+                f"({delta.min():+.1f})."
+            )
+
+    st.subheader("5. Сценарий усиления: журнал жадного выбора")
+    steps = plan.steps
+    signed_rows = [row for row, decision in enumerate(steps["decision"]) if decision == "signed"]
+    shown_steps = steps.head(signed_rows[-1] + 4 if signed_rows else 10)
+    st.dataframe(
+        shown_steps.assign(
+            decision=shown_steps["decision"].map(DECISION_LABELS),
+            market_value=shown_steps["market_value"] / MILLION,
+            remaining_before=shown_steps["remaining_before"] / MILLION,
+            remaining_after=shown_steps["remaining_after"] / MILLION,
+        ),
+        hide_index=True,
+        column_config={
+            "player_name": "Игрок",
+            "team": "Клуб",
+            "score": COLUMN_CONFIG["score"],
+            "market_value": st.column_config.NumberColumn("Стоимость, €M", format="%.1f"),
+            "remaining_before": st.column_config.NumberColumn("Остаток до, €M", format="%.1f"),
+            "decision": "Решение",
+            "remaining_after": st.column_config.NumberColumn("Остаток после, €M", format="%.1f"),
+        },
+        width="stretch",
+    )
+    after_core = pd.concat([squad, plan.signings]).nlargest(CORE_SIZE, "score")
+    st.markdown(
+        f"Ядро до: {names_with_scores(squad.head(CORE_SIZE)) or '—'} → **{plan.quality_before:.1f}**. "
+        f"Ядро после: {names_with_scores(after_core) or '—'} → **{plan.quality_after:.1f}**."
+    )
+    cut_steps = plan_steps(candidates, 0.8 * budget * MILLION, n_signings)
+    cut_signings = cut_steps.loc[cut_steps["decision"].eq("signed"), "player_name"].tolist()
+    same_choice = cut_signings == plan.signings["player_name"].tolist()
+    st.markdown(
+        f"Тот же проход при бюджете −20 % ({0.8 * budget:.0f} €M) даёт: {', '.join(cut_signings) or 'ни одной покупки'}. "
+        + (
+            "Выбор не меняется: лучшие кандидаты стоят меньше уменьшенного бюджета."
+            if same_choice
+            else "Выбор меняется: кандидат с большим рейтингом перестаёт помещаться в остаток."
+        )
     )
 
 with st.expander("Ограничения и допущения"):

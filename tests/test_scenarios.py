@@ -1,7 +1,13 @@
 import pandas as pd
 import pytest
 
-from src.scenarios import budget_sensitivity, reinforcement_plan, squad_audit, team_core_quality
+from src.scenarios import (
+    budget_sensitivity,
+    plan_steps,
+    reinforcement_plan,
+    squad_audit,
+    team_core_quality,
+)
 
 
 def scored_pool() -> pd.DataFrame:
@@ -39,6 +45,16 @@ def test_plan_stays_within_budget_and_improves_core_quality() -> None:
     assert plan.remaining == pytest.approx(7e6)
     assert plan.quality_before == pytest.approx(50.0)
     assert plan.quality_after == pytest.approx((80 + 70 + 60) / 3)
+
+
+def test_plan_steps_record_every_greedy_decision() -> None:
+    candidates, _ = split_pool()
+
+    steps = plan_steps(candidates, budget=40e6, n_signings=2)
+
+    assert steps["player_name"].tolist() == ["Star", "Unpriced", "Solid", "Bargain"]
+    assert steps["decision"].tolist() == ["too_expensive", "no_value", "signed", "signed"]
+    assert steps["remaining_after"].tolist() == pytest.approx([40e6, 40e6, 15e6, 7e6])
 
 
 def test_unpriced_players_are_flagged_instead_of_bought() -> None:

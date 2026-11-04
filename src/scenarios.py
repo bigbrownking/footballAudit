@@ -48,6 +48,44 @@ def team_core_quality(scored: pd.DataFrame, core_size: int = CORE_SIZE) -> pd.Se
     return by_team.sort_values(ascending=False)
 
 
+STEP_COLUMNS = (
+    "player_name", "team", "score", "market_value", "remaining_before", "decision", "remaining_after",
+)
+
+
+def plan_steps(candidates: pd.DataFrame, budget: float, n_signings: int = 1) -> pd.DataFrame:
+    """Walk the candidates best-first and record the greedy decision taken for each one.
+
+    Decisions: "signed" (fits the remaining budget), "too_expensive", "no_value"
+    (unknown price, cannot be bought automatically) and "slots_full". The table is
+    the plan's audit trail: every signing can be traced to the row that produced it.
+    """
+    rows, remaining, signed = [], budget, 0
+    for index, candidate in candidates.sort_values("score", ascending=False).iterrows():
+        price, before = candidate["market_value"], remaining
+        if signed == n_signings:
+            decision = "slots_full"
+        elif pd.isna(price):
+            decision = "no_value"
+        elif price <= remaining:
+            decision, remaining, signed = "signed", remaining - price, signed + 1
+        else:
+            decision = "too_expensive"
+        rows.append(
+            {
+                "index": index,
+                "player_name": candidate["player_name"],
+                "team": candidate["team"],
+                "score": candidate["score"],
+                "market_value": price,
+                "remaining_before": before,
+                "decision": decision,
+                "remaining_after": remaining,
+            }
+        )
+    return pd.DataFrame(rows, columns=["index", *STEP_COLUMNS]).set_index("index")
+
+
 @dataclass
 class ReinforcementPlan:
     budget: float
@@ -55,6 +93,7 @@ class ReinforcementPlan:
     quality_before: float
     quality_after: float
     needs_valuation: pd.DataFrame  # strong candidates without a known value
+    steps: pd.DataFrame  # greedy decision per candidate, see plan_steps()
 
     @property
     def spent(self) -> float:
@@ -78,17 +117,8 @@ def reinforcement_plan(
     returned separately so a scout can price them, instead of the model silently
     treating an unknown value as free.
     """
-    priced = candidates.dropna(subset=["market_value"]).sort_values("score", ascending=False)
-    chosen: list = []
-    remaining = budget
-    for index, candidate in priced.iterrows():
-        if len(chosen) == n_signings:
-            break
-        if candidate["market_value"] <= remaining:
-            chosen.append(index)
-            remaining -= candidate["market_value"]
-
-    signings = priced.loc[chosen]
+    steps = plan_steps(candidates, budget, n_signings)
+    signings = candidates.loc[steps.index[steps["decision"].eq("signed")]]
     unpriced = candidates.loc[candidates["market_value"].isna()].nlargest(5, "score")
     return ReinforcementPlan(
         budget=budget,
@@ -96,6 +126,7 @@ def reinforcement_plan(
         quality_before=core_quality(squad, core_size),
         quality_after=core_quality(pd.concat([squad, signings]), core_size),
         needs_valuation=unpriced,
+        steps=steps,
     )
 
 
