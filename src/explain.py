@@ -27,6 +27,31 @@ def pool_quantiles(scored: pd.DataFrame, metrics: list[str]) -> pd.DataFrame:
     return table
 
 
+def score_derivation(scored: pd.DataFrame, player: pd.Series, weights: dict[str, float]) -> pd.DataFrame:
+    """Every number behind one player's score, metric by metric.
+
+    `rank(pct=True)` divides a player's rank by the number of pool players that have
+    the metric, so rank = percentile * with_data and points = 100 * share * percentile.
+    """
+    total = sum(weights.values())
+    rows = []
+    for metric, weight in weights.items():
+        with_data = int(scored[metric].notna().sum())
+        percentile = float(player[f"pct_{metric}"])
+        rows.append(
+            {
+                "metric": metric,
+                "value": player[metric],
+                "rank": percentile * with_data,
+                "with_data": with_data,
+                "percentile": percentile,
+                "share": weight / total,
+                "points": float(player[f"contrib_{metric}"]),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def candidate_funnel(
     scored: pd.DataFrame,
     exclude_team: str,

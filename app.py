@@ -12,7 +12,14 @@ from src.app_data import (
     metric_labels,
     role_weights,
 )
-from src.explain import candidate_funnel, pool_quantiles, positions_overview, score_gap, weight_table
+from src.explain import (
+    candidate_funnel,
+    pool_quantiles,
+    positions_overview,
+    score_derivation,
+    score_gap,
+    weight_table,
+)
 from src.ranking import filter_candidates, score_players
 from src.scenarios import (
     CORE_SIZE,
@@ -93,6 +100,22 @@ def player_options(frame: pd.DataFrame) -> dict[str, str]:
 def names_with_scores(frame: pd.DataFrame) -> str:
     """'Name (72.9), Name (67.5)' for short textual explanations."""
     return ", ".join(f"{name} ({score:.1f})" for name, score in zip(frame["player_name"], frame["score"]))
+
+
+def mean_equation(scores: pd.Series) -> str:
+    """LaTeX for '(a + b + c) / n = mean'."""
+    return r"\frac{%s}{%d} = %.1f" % (" + ".join(f"{s:.1f}" for s in scores), len(scores), scores.mean())
+
+
+def score_equation(label: str, row, weight: float, total_weight: float) -> str:
+    """One markdown line: metric value -> rank in pool -> percentile -> points, written as an equation."""
+    if pd.isna(row.value):
+        math = r"100 \cdot \frac{%.2f}{%.2f} \cdot 0.5 = %.2f" % (weight, total_weight, row.points)
+        return f"- **{label}**: нет данных → процентиль 0.5 по умолчанию → ${math}$"
+    math = r"100 \cdot \frac{%.2f}{%.2f} \cdot \frac{%.1f}{%d} = 100 \cdot %.3f \cdot %.4f = %.2f" % (
+        weight, total_weight, row.rank, row.with_data, row.share, row.percentile, row.points,
+    )
+    return f"- **{label}** = {row.value:.2f} → ранг {row.rank:.1f} из {row.with_data} → ${math}$"
 
 
 # ---------------------------------------------------------------- inputs
@@ -282,16 +305,36 @@ with tab_calc:
         column_config={"p25": "25-й процентиль", "p50": "медиана", "p75": "75-й", "p90": "90-й"},
         width="stretch",
     )
+    if not candidates.empty:
+        st.markdown("**Пример: рейтинг одного игрока по шагам**")
+        st.latex(r"pct_i = \frac{\mathrm{rank}_i}{N_i}, \qquad points_i = 100 \cdot \frac{w_i}{\sum_j w_j} \cdot pct_i")
+        example_options = player_options(candidates.head(10))
+        example_id = example_options[st.selectbox("Игрок для примера", list(example_options))]
+        example = candidates.loc[candidates["record_id"].eq(example_id)].iloc[0]
+        derivation = score_derivation(scored, example, weights)
+        total_weight = sum(weights.values())
+        st.markdown(
+            "\n".join(
+                score_equation(labels[row.metric], row, weights[row.metric], total_weight)
+                for row in derivation.itertuples()
+            )
+        )
+        st.latex(
+            r"score = " + " + ".join(f"{p:.2f}" for p in derivation["points"]) + f" = {derivation['points'].sum():.1f}"
+        )
+        st.caption(
+            "Ранг — место значения среди игроков пула, у которых эта метрика есть (N); при равных значениях "
+            "берётся средний ранг, поэтому возможны половинки."
+        )
 
     st.subheader("2. Аудит состава: качество ядра и место клуба")
     if squad.empty:
         st.info("У клуба нет игроков этой позиции в пуле.")
     else:
         core = squad.head(CORE_SIZE)
-        st.markdown(
-            f"Ядро = {CORE_SIZE} лучших игрока клуба по рейтингу: {names_with_scores(core)} "
-            f"→ среднее **{core['score'].mean():.1f}**. То же считается для каждого клуба пула:"
-        )
+        st.markdown(f"Ядро = {CORE_SIZE} лучших игрока клуба по рейтингу: {names_with_scores(core)}.")
+        st.latex(mean_equation(core["score"]))
+        st.markdown("То же считается для каждого клуба пула, место клуба — его строка в этом списке:")
         standings = league_table.rename("core_quality").reset_index()
         standings.index = standings.index + 1
         shown_rows = standings.head(5) if rank is None else pd.concat([standings.head(5), standings.loc[[rank]]])
@@ -381,6 +424,23 @@ with tab_calc:
                 f"добавляет {delta.idxmax()} ({delta.max():+.1f}), больше всего отнимает {delta.idxmin()} "
                 f"({delta.min():+.1f})."
             )
+        first, second = compared.iloc[0], compared.iloc[1]
+        st.markdown(f"Разница по метрикам, **{selected[1]}** минус **{selected[0]}** (макс. баллов × разность процентилей):")
+        total_weight = sum(weights.values())
+        st.markdown(
+            "\n".join(
+                r"- **%s**: $%.1f \cdot (%.4f - %.4f) = %+.2f$"
+                % (
+                    labels[metric],
+                    100 * weight / total_weight,
+                    second[f"pct_{metric}"],
+                    first[f"pct_{metric}"],
+                    100 * weight / total_weight * (second[f"pct_{metric}"] - first[f"pct_{metric}"]),
+                )
+                for metric, weight in weights.items()
+            )
+        )
+        st.latex(r"\sum \Delta = %.1f - %.1f = %+.1f" % (second["score"], first["score"], second["score"] - first["score"]))
 
     st.subheader("5. Сценарий усиления: журнал жадного выбора")
     steps = plan.steps
@@ -405,11 +465,20 @@ with tab_calc:
         },
         width="stretch",
     )
+    if not plan.signings.empty:
+        remaining, budget_steps = budget, []
+        for price in plan.signings["market_value"] / MILLION:
+            budget_steps.append(f"{remaining:.1f} - {price:.1f} = {remaining - price:.1f}")
+            remaining -= price
+        st.markdown("Остаток бюджета после каждой покупки, €M:")
+        st.latex(r" \quad\rightarrow\quad ".join(budget_steps))
     after_core = pd.concat([squad, plan.signings]).nlargest(CORE_SIZE, "score")
-    st.markdown(
-        f"Ядро до: {names_with_scores(squad.head(CORE_SIZE)) or '—'} → **{plan.quality_before:.1f}**. "
-        f"Ядро после: {names_with_scores(after_core) or '—'} → **{plan.quality_after:.1f}**."
-    )
+    st.markdown(f"Ядро до: {names_with_scores(squad.head(CORE_SIZE)) or '—'}.")
+    if not squad.empty:
+        st.latex(mean_equation(squad.head(CORE_SIZE)["score"]))
+    st.markdown(f"Ядро после: {names_with_scores(after_core) or '—'}.")
+    if not after_core.empty:
+        st.latex(mean_equation(after_core["score"]))
     cut_steps = plan_steps(candidates, 0.8 * budget * MILLION, n_signings)
     cut_signings = cut_steps.loc[cut_steps["decision"].eq("signed"), "player_name"].tolist()
     same_choice = cut_signings == plan.signings["player_name"].tolist()

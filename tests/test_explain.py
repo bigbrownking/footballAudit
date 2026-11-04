@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from src.explain import candidate_funnel, pool_quantiles, score_gap, weight_table
+from src.explain import candidate_funnel, pool_quantiles, score_derivation, score_gap, weight_table
 from src.ranking import score_players
 
 WEIGHTS = {"xa_per90": 0.5, "tackles_per90": 0.5}
@@ -51,6 +51,19 @@ def test_score_gap_adds_up_to_the_score_difference() -> None:
     assert gap["gap:Destroyer"].sum() == pytest.approx(
         scored.loc["Destroyer", "score"] - scored.loc["Creator", "score"]
     )
+
+
+def test_score_derivation_reproduces_rank_percentile_and_points() -> None:
+    scored = scored_midfielders()
+    creator = scored.loc[scored["player_name"].eq("Creator")].iloc[0]
+
+    derivation = score_derivation(scored, creator, WEIGHTS).set_index("metric")
+
+    assert derivation.loc["xa_per90", "rank"] == pytest.approx(4)  # best of four
+    assert derivation.loc["xa_per90", "with_data"] == 4
+    assert derivation.loc["xa_per90", "points"] == pytest.approx(100 * 0.5 * 1.0)
+    assert derivation.loc["tackles_per90", "rank"] == pytest.approx(2)  # second lowest of four
+    assert derivation["points"].sum() == pytest.approx(creator["score"])
 
 
 def test_pool_quantiles_reports_requested_percentiles() -> None:
